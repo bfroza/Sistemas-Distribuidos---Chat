@@ -1,0 +1,135 @@
+===========================
+TESTES P2P - CHAT DISTRIBUÍDO
+===========================
+
+1) Verificar processos e portas
+
+Windows:
+- Ver todas as conexões TCP na porta 5555:
+  netstat -ano | findstr 5555
+- Ver processos que escutam a porta 5555:
+  tasklist | findstr 5555
+- Alternativa PowerShell:
+  Get-NetTCPConnection -LocalPort 5555
+
+Linux:
+- Conexões TCP ativas:
+  ss -tnap | grep 5555
+- Ver processos ligados à porta:
+  sudo netstat -tnlp | grep 5555
+
+--------------------------------------------------
+2) Testar comunicação P2P básica
+- Inicie 2 ou 3 peers em máquinas diferentes ou em portas diferentes.
+- Envie mensagem de um peer e verifique se os outros recebem.
+- Verifique no terminal de cada peer se aparece "[CONNECTED]" ou logs de broadcast.
+
+--------------------------------------------------
+3) Testar falha proposital - matar peer
+
+Windows:
+- Identificar PID (do netstat anterior)
+- Matar processo:
+  taskkill /PID <PID> /F
+
+Linux:
+- Matar processo:
+  kill -9 <PID>
+
+- Observação: outros peers devem continuar se comunicando sem esse peer.
+
+--------------------------------------------------
+4) Testar bloqueio de porta / firewall
+
+Windows:
+- Bloquear porta TCP 5555:
+  netsh advfirewall firewall add rule name="Block5555" dir=in action=block protocol=TCP localport=5555
+- Desbloquear:
+  netsh advfirewall firewall delete rule name="Block5555"
+
+Linux (ufw):
+- Bloquear porta TCP 5555:
+  sudo ufw deny 5555/tcp
+- Desbloquear:
+  sudo ufw allow 5555/tcp
+
+--------------------------------------------------
+5) Testar desconexão da interface de rede
+
+Windows:
+- Desabilitar interface:
+  netsh interface set interface "Ethernet" admin=disable
+- Habilitar novamente:
+  netsh interface set interface "Ethernet" admin=enable
+
+Linux:
+- Desabilitar:
+  sudo ip link set eth0 down
+- Habilitar:
+  sudo ip link set eth0 up
+
+--------------------------------------------------
+6) Testar multicast
+
+Linux:
+- Capturar pacotes multicast:
+  sudo tcpdump -i any udp and port 5007
+
+Windows:
+- Use Wireshark e filtre por:
+  udp.port == 5007
+- Verifique se peers estão anunciando e descobrindo outros peers via multicast.
+
+--------------------------------------------------
+7) Testar sincronização de histórico (novo peer)
+
+- Inicie peer A e B, envie algumas mensagens em A.
+- Inicie peer C, observe:
+  - C deve solicitar HISTORY_REQ
+  - A ou B enviam HISTORY_RESP
+  - GUI de C mostra mensagens antigas
+- Verifique que essas mensagens antigas **não são re-broadcastadas** para outros peers novamente.
+
+--------------------------------------------------
+8) Testar resiliência / malha P2P
+
+- Mate um peer no meio da conversa (veja item 3).
+- Verifique se os demais continuam trocando mensagens.
+- Observe logs de broadcast e desconexão.
+
+--------------------------------------------------
+9) Verificar topologia de conexões
+
+Windows:
+- netstat -ano | findstr 5555
+- Identifique pares ESTABLISHED → cada par = conexão P2P
+
+Linux:
+- ss -tnp | grep 5555
+
+- Confirme que cada peer tem conexões diretas com todos os outros (malha completa).
+- Se um peer morrer e alguns pares isolarem, malha não está completa.
+
+--------------------------------------------------
+10) Teste automático de falha (opcional)
+
+Windows:
+- Agendar matar peer após X segundos:
+  timeout /t 10 && taskkill /PID <PID> /F
+
+Linux:
+- sleep 10; kill -9 <PID>
+
+- Útil para testes de reconexão e resiliência.
+
+--------------------------------------------------
+DICAS FINAIS:
+
+- Use cores diferentes na GUI para mensagens enviadas/recebidas para fácil identificação.
+- Sempre verifique se o histórico antigo **não é re-broadcastado** como mensagem nova.
+- Para testes locais, você pode abrir múltiplas instâncias do peer na mesma máquina em portas diferentes.
+- Documente os PIDs e portas para facilitar matar peers e reverter testes.
+
+===========================
+FIM - CHECKLIST P2P
+===========================
