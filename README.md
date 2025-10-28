@@ -84,6 +84,51 @@ def from_dict(block_dict):
 
 Esta validação é **crucial** para a segurança. Antes da correção, o código simplesmente sobrescrevia o hash calculado com o hash recebido, permitindo blocos fraudulentos. Agora, se o hash não bate, uma exceção é lançada.
 
+**Sistema Reativo com Python Properties:**
+
+A implementação atual da classe `Block` utiliza **Python properties com setters** para criar um sistema reativo onde o hash é recalculado automaticamente quando qualquer atributo do bloco é modificado:
+
+```python
+class Block:
+    def __init__(self, index, timestamp, data, previous_hash):
+        # Usa atributos privados para controlar quando o hash é recalculado
+        self._index = index
+        self._timestamp = timestamp
+        self._data = data
+        self._previous_hash = previous_hash
+        self._hash = self.calculate_hash()
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        self._data = value
+        self._hash = self.calculate_hash()  # Recalcula automaticamente!
+
+    @property
+    def previous_hash(self):
+        return self._previous_hash
+
+    @previous_hash.setter
+    def previous_hash(self, value):
+        self._previous_hash = value
+        self._hash = self.calculate_hash()  # Recalcula automaticamente!
+
+    @property
+    def hash(self):
+        return self._hash
+```
+
+**Como Funciona:**
+- Todos os atributos são armazenados como privados (prefixo `_`)
+- Os `@property` decorators criam getters para acesso de leitura
+- Os setters interceptam qualquer modificação e recalculam o hash automaticamente
+- Quando você faz `block.data = "novo valor"`, o setter é chamado e `calculate_hash()` é executado
+
+**Implicação:** Este design garante que o hash de um bloco sempre reflita seu estado atual, tornando impossível ter dados modificados com hash desatualizado.
+
 #### Classe Blockchain
 
 Gerencia a cadeia completa de blocos.
@@ -173,6 +218,81 @@ def merge(self, other_chain_list):
 ```
 
 Esta função implementa a regra de consenso simples: **aceitar sempre a cadeia mais longa que seja válida e compatível**. Isso permite que peers novos ou desatualizados sincronizem com a rede.
+
+**Propagação Automática de Hashes:**
+
+A classe `Blockchain` também implementa um método para propagar mudanças em cascata quando um bloco é modificado:
+
+```python
+def recalculate_from(self, start_index):
+    """
+    Recalcula os hashes de todos os blocos a partir de start_index.
+    Usado quando um bloco é modificado para propagar as mudanças.
+    """
+    if start_index < 1 or start_index >= len(self.chain):
+        return
+
+    # Para cada bloco a partir do start_index
+    for i in range(start_index, len(self.chain)):
+        current_block = self.chain[i]
+        previous_block = self.chain[i - 1]
+
+        # Atualiza o previous_hash para apontar para o hash atual do bloco anterior
+        current_block.previous_hash = previous_block.hash
+        # O hash será recalculado automaticamente pelo setter
+```
+
+**Como Funciona a Propagação:**
+
+Quando você modifica um bloco intermediário (ex: Bloco 3), os blocos seguintes (4, 5, 6...) precisam ter seus hashes recalculados para manter o encadeamento correto:
+
+```
+ANTES da modificação:
+Bloco 3: hash=abc... → Bloco 4: previous_hash=abc... → Bloco 5: previous_hash=def...
+
+Modificar Bloco 3:
+blockchain.chain[3].data = "NOVO CONTEÚDO"
+→ Setter recalcula: Bloco 3: hash=xyz... (MUDOU!)
+
+Mas:
+Bloco 4: previous_hash=abc... (DESATUALIZADO!)
+→ Blockchain inválida!
+
+Propagar mudanças:
+blockchain.recalculate_from(4)
+→ Atualiza Bloco 4: previous_hash=xyz... → hash recalculado automaticamente
+→ Atualiza Bloco 5: previous_hash=(novo hash do 4) → hash recalculado
+→ E assim por diante...
+
+DEPOIS da propagação:
+Bloco 3: hash=xyz... → Bloco 4: previous_hash=xyz... → Bloco 5: previous_hash=(novo)
+→ Blockchain válida novamente!
+```
+
+**Implicações de Segurança:**
+
+Este mecanismo demonstra um conceito importante sobre blockchains:
+
+1. **Validação Local vs Consenso Distribuído**:
+   - Com `recalculate_from()`, a blockchain modificada permanece **localmente válida**
+   - `blockchain.is_valid()` retorna `True` pois todos os hashes estão corretos
+   - **MAS** a blockchain é **diferente** das blockchains dos outros peers
+   - Outros peers **rejeitarão** esta blockchain por não ser idêntica (consenso)
+
+2. **Segurança através de Consenso**:
+   - A segurança NÃO vem apenas da validação individual de hashes
+   - A segurança vem do **consenso distribuído**
+   - Mesmo com blockchain tecnicamente válida, se for diferente, é rejeitada
+   - Atacante precisaria controlar a **maioria dos peers** (ataque 51%)
+
+3. **Uso Educacional**:
+   - No `peer_malicioso.py`, após modificar um bloco:
+     ```python
+     blockchain.chain[block_index].data = new_data
+     blockchain.recalculate_from(block_index + 1)
+     ```
+   - Isso demonstra que manter integridade local não é suficiente
+   - O peer ainda fica isolado por ter blockchain divergente
 
 ---
 
