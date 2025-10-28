@@ -48,22 +48,27 @@ Representa um bloco individual na cadeia. Cada bloco contém:
 ```python
 class Block:
     def __init__(self, index, timestamp, data, previous_hash):
-        self.index = index              # Posição sequencial na cadeia (0, 1, 2, ...)
-        self.timestamp = timestamp      # Momento de criação (Unix timestamp)
-        self.data = data                # Conteúdo da mensagem
-        self.previous_hash = previous_hash  # Hash do bloco anterior
-        self.hash = self.calculate_hash()  # Hash deste bloco
+        self._index = index              # Posição sequencial na cadeia (0, 1, 2, ...)
+        self._timestamp = timestamp      # Momento de criação (Unix timestamp)
+        self._data = data                # Conteúdo da mensagem
+        self._previous_hash = previous_hash  # Hash do bloco anterior
+        self._hash = self.calculate_hash()  # Hash deste bloco
 ```
 
 **Método calculate_hash():**
 ```python
 def calculate_hash(self):
     """Calcula o hash SHA-256 do bloco."""
-    block_string = f"{self.index}{self.timestamp}{self.data}{self.previous_hash}"
+    block_string = json.dumps({
+        "index": self._index,
+        "timestamp": self._timestamp,
+        "data": self._data,
+        "previous_hash": self._previous_hash
+    }, sort_keys=True)
     return hashlib.sha256(block_string.encode()).hexdigest()
 ```
 
-Este método concatena todos os dados do bloco e aplica a função SHA-256, gerando um hash de 64 caracteres hexadecimais. Qualquer alteração mínima nos dados resulta em um hash completamente diferente.
+Este método serializa todos os dados do bloco em JSON ordenado e aplica a função SHA-256, gerando um hash de 64 caracteres hexadecimais. Qualquer alteração mínima nos dados resulta em um hash completamente diferente. O uso de `sort_keys=True` garante ordem consistente nas chaves do dicionário.
 
 **Método from_dict():**
 ```python
@@ -127,7 +132,7 @@ class Block:
 - Os setters interceptam qualquer modificação e recalculam o hash automaticamente
 - Quando você faz `block.data = "novo valor"`, o setter é chamado e `calculate_hash()` é executado
 
-**Implicação:** Este design garante que o hash de um bloco sempre reflita seu estado atual, tornando impossível ter dados modificados com hash desatualizado.
+**Implicação:** Este design garante que o hash de um bloco sempre reflita seu estado atual, tornando impossível ter dados modificados com hash desatualizado (em condições normais de uso).
 
 #### Classe Blockchain
 
@@ -195,10 +200,14 @@ Esta função percorre toda a cadeia verificando três invariantes:
 2. Cada bloco aponta corretamente para o anterior
 3. Os timestamps são cronológicos
 
-**Sincronização (Merge):**
+**Sincronização (Merge) com Detecção de Divergência:**
 ```python
 def merge(self, other_chain_list):
-    """Aceita outra chain apenas se for maior, válida e com mesmo genesis."""
+    """Aceita outra chain apenas se for maior, válida e com mesmo genesis.
+
+    Detecta divergência de histórico - se o outro peer tiver blocos
+    diferentes nos índices que nós já conhecemos, rejeitamos a chain.
+    """
     try:
         other = Blockchain.from_list(other_chain_list)
     except (ValueError, KeyError) as e:
@@ -210,14 +219,36 @@ def merge(self, other_chain_list):
         print("[SEGURANÇA] Genesis diferente")
         return False
 
-    # Validação 2: Maior e válida?
+    # Validação 2: Verifica conflito de histórico
+    if self._has_history_conflict(other):
+        print("[SEGURANÇA] Chain rejeitada - histórico divergente")
+        return False
+
+    # Validação 3: Maior e válida?
     if len(other.chain) > len(self.chain) and other.is_valid():
         self.chain = other.chain
         return True
     return False
 ```
 
-Esta função implementa a regra de consenso simples: **aceitar sempre a cadeia mais longa que seja válida e compatível**. Isso permite que peers novos ou desatualizados sincronizem com a rede.
+Esta função implementa a regra de consenso: **aceitar sempre a cadeia mais longa que seja válida e compatível**. A detecção de conflito de histórico previne ataques sofisticados onde um atacante modifica blocos antigos e recalcula todos os hashes.
+
+**Detecção de Conflito de Histórico:**
+```python
+def _has_history_conflict(self, other):
+    """
+    Verifica se há conflito de histórico entre self e other.
+    Retorna True se, para qualquer índice onde ambos têm blocos, os dados divergem.
+    Detecta casos onde alguém alterou blocos antigos e recalculou hashes.
+    """
+    min_len = min(len(self.chain), len(other.chain))
+    for i in range(min_len):
+        if self.chain[i].hash != other.chain[i].hash:
+            if self.chain[i].data != other.chain[i].data:
+                # Histórico distinto detectado
+                return True
+    return False
+```
 
 **Propagação Automática de Hashes:**
 
@@ -277,7 +308,7 @@ Este mecanismo demonstra um conceito importante sobre blockchains:
    - Com `recalculate_from()`, a blockchain modificada permanece **localmente válida**
    - `blockchain.is_valid()` retorna `True` pois todos os hashes estão corretos
    - **MAS** a blockchain é **diferente** das blockchains dos outros peers
-   - Outros peers **rejeitarão** esta blockchain por não ser idêntica (consenso)
+   - Outros peers **rejeitarão** esta blockchain por ter histórico divergente
 
 2. **Segurança através de Consenso**:
    - A segurança NÃO vem apenas da validação individual de hashes
@@ -302,22 +333,22 @@ Implementa descoberta automática de peers usando **multicast UDP**.
 
 **Anunciante:**
 ```python
-def multicast_announcer(port):
-    """Anuncia presença na rede a cada 5 segundos."""
+def multicast_announcer(local_port=5555):
+    """Anuncia presença na rede a cada 2 segundos."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 16)
 
+    msg = str(local_port).encode("utf-8")
     while True:
-        message = f"PEER_ANNOUNCE:{port}".encode("utf-8")
-        sock.sendto(message, (MULTICAST_GROUP, MULTICAST_PORT))
-        time.sleep(5)
+        sock.sendto(msg, (MULTICAST_GROUP, MULTICAST_PORT))
+        time.sleep(2)
 ```
 
-Cada peer envia periodicamente um anúncio para o grupo multicast `224.0.0.1:5004`, informando que está ativo e em qual porta está escutando.
+Cada peer envia periodicamente um anúncio para o grupo multicast `224.1.1.1:5007`, informando que está ativo e em qual porta está escutando.
 
 **Ouvinte:**
 ```python
-def multicast_listener(callback):
+def multicast_listener(on_peer_found):
     """Escuta anúncios de outros peers."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -328,9 +359,10 @@ def multicast_listener(callback):
 
     while True:
         data, addr = sock.recvfrom(1024)
-        if data.decode("utf-8").startswith("PEER_ANNOUNCE:"):
-            _, port = data.decode("utf-8").split(":")
-            callback(addr[0], int(port))
+        peer_port = int(data.decode("utf-8"))
+        peer_ip = addr[0]
+        if on_peer_found:
+            on_peer_found(peer_ip, peer_port)
 ```
 
 Quando um anúncio é recebido, o callback é chamado com o IP e porta do peer descoberto, iniciando uma conexão TCP.
@@ -401,7 +433,8 @@ O sistema usa um protocolo textual simples:
 2. **BLOCKCHAIN_REQ** - Solicita blockchain completa
 3. **BLOCKCHAIN_RESP\n{json}** - Responde com blockchain em JSON
 4. **BLOCK:{json}** - Envia novo bloco para validação
-5. Mensagens antigas sem prefixo (modo legado)
+5. **HISTORY_REQ/HISTORY_RESP** - Modo legado (compatibilidade retroativa)
+6. Mensagens antigas sem prefixo (modo legado)
 
 #### Handler de Peer
 
@@ -471,31 +504,36 @@ def handle_peer(conn, addr, chat_box):
                     insert_message(chat_box, "⚠️ Chain malformada!", "system")
                 continue
 
-            # BLOCK
+            # BLOCK (validação em 4 camadas)
             if data.startswith("BLOCK:"):
+                # Validação 0: Blockchain local íntegra?
+                if not blockchain.is_valid():
+                    insert_message(chat_box, "⚠️ BLOCKCHAIN LOCAL CORROMPIDA!", "system")
+                    continue
+
                 try:
                     _, block_json = data.split(":", 1)
                     block_dict = json.loads(block_json)
 
-                    # Validação automática do hash no from_dict
+                    # Validação 1: Hash correto?
                     try:
                         received_block = Block.from_dict(block_dict)
                     except ValueError as e:
                         insert_message(chat_box, f"⚠️ REJEITADO: {e}", "system")
                         continue
 
-                    # Validação de encadeamento
+                    # Validação 2: Encadeamento correto?
                     if received_block.previous_hash != blockchain.get_latest_block().hash:
                         print("[SEGURANÇA] Previous hash não bate")
                         conn.sendall("BLOCKCHAIN_REQ".encode("utf-8"))
                         continue
 
-                    # Validação de índice
+                    # Validação 3: Índice sequencial?
                     if received_block.index != len(blockchain.chain):
                         insert_message(chat_box, "⚠️ Índice inválido", "system")
                         continue
 
-                    # Validação de timestamp
+                    # Validação 4: Timestamp cronológico?
                     if received_block.timestamp < blockchain.get_latest_block().timestamp:
                         insert_message(chat_box, "⚠️ Timestamp inválido", "system")
                         continue
@@ -552,21 +590,22 @@ Genesis Block          Bloco 1              Bloco 2
 A imutabilidade vem do **encadeamento criptográfico**:
 
 1. Se você tentar modificar o Bloco 1:
-   - O hash do Bloco 1 mudará
+   - O hash do Bloco 1 mudará (graças ao sistema reativo)
    - O Bloco 2 aponta para o hash antigo do Bloco 1
    - A validação detecta: `block2.previous_hash != block1.hash`
    - A cadeia se torna inválida
 
-2. Se você modificar o Bloco 1 E recalcular seu hash:
-   - O Bloco 2 ainda aponta para o hash antigo
-   - Você precisa recalcular o Bloco 2 também
-   - E o Bloco 3, e o 4, e assim por diante...
-   - Mas os outros peers têm a cadeia original e rejeitarão sua versão
+2. Se você modificar o Bloco 1 E recalcular toda a cadeia:
+   - A blockchain fica localmente válida
+   - Mas é **diferente** das blockchains dos outros peers
+   - O método `_has_history_conflict()` detecta a divergência
+   - Outros peers rejeitam sua versão na sincronização
 
 ### Consenso Simplificado
 
 Este sistema usa uma regra de consenso simples:
 - **Aceitar sempre a cadeia válida mais longa**
+- **Rejeitar cadeias com histórico divergente**
 - Não há proof-of-work ou mineração
 - Em caso de conflito (fork), prevalece a maior
 
@@ -594,7 +633,7 @@ Peer B─┼─Peer C
 
 ### Protocolo de Descoberta
 
-1. **Anúncio**: Cada peer envia `PEER_ANNOUNCE:5555` via multicast a cada 5 segundos
+1. **Anúncio**: Cada peer envia sua porta via multicast a cada 2 segundos
 2. **Descoberta**: Outros peers escutam o multicast e extraem IP + porta
 3. **Conexão**: Peer ouvinte inicia conexão TCP com o peer anunciado
 4. **Handshake**: Troca de usernames e sincronização de blockchain
@@ -618,7 +657,7 @@ Quando um peer envia uma mensagem:
    broadcast(f"BLOCK:{block_data}")
    ```
 
-4. **Recepção e Validação** por cada peer conectado
+4. **Recepção e Validação** por cada peer conectado (4 camadas)
 
 5. **Rebroadcast**: Se válido, cada peer repassa para seus outros peers
 
@@ -639,7 +678,16 @@ Para evitar que mensagens circulem infinitamente:
 
 ### 1. Validação em Múltiplas Camadas
 
-Cada bloco recebido passa por **4 validações**:
+Cada bloco recebido passa por **5 validações**:
+
+#### Validação 0: Integridade Local
+```python
+if not blockchain.is_valid():
+    # Rejeita tudo se blockchain local estiver corrompida
+    REJEITAR()
+```
+
+Garante que o peer não está comprometido antes de aceitar novos blocos.
 
 #### Validação 1: Hash Correto
 ```python
@@ -672,32 +720,22 @@ if received_block.timestamp < blockchain.get_latest_block().timestamp:
 
 Previne ataques de backdating.
 
-### 2. Isolamento de Peers Maliciosos
+### 2. Isolamento Automático de Peers Maliciosos
 
-Quando um peer tenta enviar blocos inválidos:
+Quando um peer detecta que sua blockchain está corrompida:
 
-```
-Peer Malicioso              Peer Honesto A            Peer Honesto B
-      |                           |                         |
-      |--- Bloco Inválido ------->|                         |
-      |                      [VALIDAÇÃO]                    |
-      |                           ❌                         |
-      |                      REJEITADO                      |
-      |                           |                         |
-      |                      (não propaga)                  |
-      |                           |                         |
-      |                           |<--- Bloco Válido -------|
-      |                      [VALIDAÇÃO]                    |
-      |                           ✅                         |
-      |                      ACEITO                         |
-      |                           |                         |
+```python
+if INFECTED:
+    # Bloqueia envio de mensagens
+    # Bloqueia recepção de blocos
+    # Rejeita sincronização
 ```
 
-O peer malicioso fica **isolado** pois seus blocos nunca passam na validação e não são propagados.
+O peer se auto-isola da rede para não propagar corrupção.
 
 ### 3. Sincronização Segura
 
-Durante a sincronização, três verificações críticas:
+Durante a sincronização, quatro verificações críticas:
 
 1. **Genesis Matching**:
    ```python
@@ -705,13 +743,19 @@ Durante a sincronização, três verificações críticas:
        return False
    ```
 
-2. **Validação Completa**:
+2. **Detecção de Histórico Divergente**:
+   ```python
+   if self._has_history_conflict(other):
+       return False
+   ```
+
+3. **Validação Completa**:
    ```python
    if other.is_valid():
        # Verifica TODOS os blocos
    ```
 
-3. **Tratamento de Exceções**:
+4. **Tratamento de Exceções**:
    ```python
    try:
        other = Blockchain.from_list(other_chain)
@@ -738,6 +782,7 @@ O peer malicioso existe para **demonstrar** que:
 1. Adulteração de dados é facilmente detectável
 2. Peers maliciosos são automaticamente isolados
 3. A rede permanece segura mesmo com participantes desonestos
+4. Integridade local não garante aceitação pela rede
 
 ### Implementação da Infecção
 
@@ -749,7 +794,7 @@ def adulterate_blockchain_interactive(chat_box):
     block_index = selection[0] + 1
     new_data = new_content_entry.get().strip()
 
-    # CRÍTICO: Modifica dados mas NÃO recalcula hash
+    # CRÍTICO: Modifica dados mas NÃO recalcula hash!
     blockchain.chain[block_index].data = new_data
     # blockchain.chain[block_index].hash continua com valor antigo!
 
@@ -758,8 +803,9 @@ def adulterate_blockchain_interactive(chat_box):
 
     # Atualiza visualmente o chat
     messages[block_index - 1] = new_data
-    # Reconstrói todo o chat para mostrar mensagem adulterada
 ```
+
+**Nota Importante**: O setter normalmente recalcularia o hash automaticamente. O peer malicioso contorna isso modificando diretamente o atributo `_data` ou desabilitando temporariamente o recálculo.
 
 ### Consequências da Infecção
 
@@ -781,6 +827,12 @@ def adulterate_blockchain_interactive(chat_box):
      - Detectam hashes inválidos no `from_dict()`
      - Rejeitam na validação `is_valid()`
      - Não propagam os blocos
+
+4. **Interface Visual**:
+   - Tema muda para vermelho/escuro
+   - Label "INFECTADO" aparece
+   - Botão de infecção desabilitado
+   - Avisos de isolamento exibidos
 
 ### Demonstração de Segurança
 
@@ -836,13 +888,14 @@ for block_dict in received_chain:
    ↓
 9. Peer receptor:
    a) Desserializa JSON
-   b) Valida hash (from_dict)
-   c) Valida previous_hash
-   d) Valida index
-   e) Valida timestamp
-   f) Se todas passarem: adiciona à blockchain local
-   g) Exibe mensagem no chat
-   h) Rebroadcast para seus outros peers
+   b) Valida blockchain local (Validação 0)
+   c) Valida hash (Validação 1)
+   d) Valida previous_hash (Validação 2)
+   e) Valida index (Validação 3)
+   f) Valida timestamp (Validação 4)
+   g) Se todas passarem: adiciona à blockchain local
+   h) Exibe mensagem no chat
+   i) Rebroadcast para seus outros peers
 ```
 
 ### Fluxo de Sincronização
@@ -865,6 +918,9 @@ Peer Novo                          Peer Existente
     |                                    |
 [Valida genesis]                        |
     ✓ Genesis match                     |
+    |                                    |
+[Verifica histórico]                    |
+    ✓ Sem divergências                  |
     |                                    |
 [Valida is_valid()]                     |
     ✓ Todos blocos válidos              |
@@ -910,6 +966,32 @@ Peer Malicioso                     Peer Honesto
 [Peer malicioso isolado]              |
 ```
 
+### Fluxo de Auto-Isolamento
+
+```
+Peer Normal                       Detecta Corrupção
+    |                                  |
+[Recebe bloco]                        |
+    |                                  |
+[Validação 0: is_valid()]             |
+    ↓                                  |
+blockchain.is_valid() == False        |
+    ↓                                  |
+⚠️ CORROMPIDO!                        |
+    ↓                                  |
+INFECTED = True                       |
+MALICIOUS_MODE = True                 |
+    ↓                                  |
+[Bloqueia tudo]                       |
+  - Rejeita blocos recebidos          |
+  - Impede envio de mensagens         |
+  - Não sincroniza                    |
+    ↓                                  |
+[UI muda para vermelho]               |
+    ↓                                  |
+⚠️ PEER ISOLADO                       |
+```
+
 ---
 
 ## Conclusão
@@ -918,7 +1000,44 @@ Este sistema demonstra de forma prática os conceitos fundamentais de:
 
 1. **Blockchain**: Estrutura de dados imutável e encadeada
 2. **Criptografia**: Uso de SHA-256 para validação
-3. **Redes P2P**: Comunicação descentralizada
-4. **Consenso Distribuído**: Regra da cadeia mais longa
-5. **Segurança**: Detecção e isolamento de adulterações
+3. **Redes P2P**: Comunicação descentralizada sem servidor central
+4. **Consenso Distribuído**: Regra da cadeia mais longa com detecção de divergência
+5. **Segurança**: Detecção e isolamento automático de adulterações
+6. **Sistema Reativo**: Properties Python para consistência automática
+7. **Validação em Camadas**: Múltiplos níveis de verificação
 
+### Limitações e Melhorias Possíveis
+
+**Limitações do Sistema Atual:**
+- Consenso simplificado (regra da cadeia mais longa)
+- Sem proof-of-work ou custo computacional para mineração
+- Vulnerável a ataques de timing em redes muito pequenas
+- Multicast pode não funcionar em todas as configurações de rede
+
+### Como Executar
+
+**Peer Normal:**
+```bash
+python peer_blockchain_v2.py
+```
+
+**Peer Malicioso:**
+```bash
+python peer_malicioso.py
+```
+
+**Requisitos:**
+- Python 3.7+
+- Tkinter (geralmente incluído com Python)
+- Rede local com suporte a multicast
+
+**Demonstração de Segurança:**
+1. Abra 2-3 instâncias do peer normal
+2. Envie mensagens entre eles
+3. Abra um peer malicioso
+4. Clique em "🦠 Infectar" e modifique um bloco
+5. Observe o isolamento automático
+6. Veja que peers normais continuam funcionando
+7. Examine a blockchain em cada peer (botão "📊 Blockchain")
+
+---
