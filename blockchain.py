@@ -170,8 +170,29 @@ class Blockchain:
         blockchain.chain = [Block.from_dict(b) for b in chain_list]
         return blockchain
     
+    def _has_history_conflict(self, other):
+        """
+        Verifica se há conflito de histórico entre self e other.
+        Retorna True se, para qualquer índice i onde ambos têm blocos, os dados divergem.
+        Isso detecta casos em que alguém alterou blocos antigos e recalculou hashes.
+        """
+        min_len = min(len(self.chain), len(other.chain))
+        for i in range(min_len):
+            # se os hashes coincidissem, tá ok; se não, comparamos os dados
+            if self.chain[i].hash != other.chain[i].hash:
+                if self.chain[i].data != other.chain[i].data:
+                    # histórico distinto detectado
+                    return True
+        return False
+
     def merge(self, other_chain_list):
-        """Mescla com outra chain (regra: aceita a maior válida com mesmo genesis)."""
+        """Mescla com outra chain (regra: aceita a maior válida com mesmo genesis).
+
+        Atualização: detecta divergência de histórico — se o outro peer tiver blocos
+        diferentes nos índices que nós já conhecemos, rejeitamos a chain e emitimos
+        um alerta. Essa checagem evita aceitar uma chain que foi adulterada localmente
+        e depois "re-hashada" para parecer válida.
+        """
         try:
             other = Blockchain.from_list(other_chain_list)
         except (ValueError, KeyError) as e:
@@ -185,6 +206,11 @@ class Blockchain:
 
         if other.chain[0].hash != self.chain[0].hash:
             print("[SEGURANÇA] Chain rejeitada - bloco genesis diferente")
+            return False
+
+        # NOVO: checar conflito de histórico em blocos já conhecidos
+        if self._has_history_conflict(other):
+            print("[SEGURANÇA] Chain rejeitada - histórico divergente detectado (provável adulteração)")
             return False
 
         # VALIDAÇÃO 2: Aceita apenas se for maior E válida
