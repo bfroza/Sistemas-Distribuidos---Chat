@@ -153,7 +153,7 @@ def adulterate_blockchain_interactive(chat_box):
         original_timestamp = blockchain.chain[block_index].timestamp
         original_hash = blockchain.chain[block_index].hash
 
-        # Modifica os dados SEM recalcular o hash
+        # Modifica os dados - o hash será recalculado automaticamente
         blockchain.chain[block_index].data = new_data
 
         # Modifica timestamp se fornecido
@@ -166,9 +166,9 @@ def adulterate_blockchain_interactive(chat_box):
                 messagebox.showerror("Erro", "Timestamp inválido! Use formato numérico (ex: 1761592522.68)")
                 return
 
-        # CRÍTICO: NÃO recalcular o hash!
-        # O hash continua sendo o antigo, mas os dados mudaram
-        # Isso quebra a blockchain permanentemente
+        # RECALCULA os hashes de todos os blocos seguintes
+        # para manter o encadeamento correto
+        blockchain.recalculate_from(block_index + 1)
 
         INFECTED = True
         MALICIOUS_MODE = True
@@ -680,15 +680,26 @@ def start_gui():
     def send_msg(event=None):
         msg = entry.get().strip()
         if msg:
-            # Se infectado, NÃO permite enviar mensagens
-            if INFECTED:
+            # VALIDAÇÃO AUTOMÁTICA: Verifica se a blockchain está íntegra
+            if not blockchain.is_valid():
+                global INFECTED, MALICIOUS_MODE
+                INFECTED = True
+                MALICIOUS_MODE = True
+
                 insert_message(chat_box,
-                             "🦠 BLOQUEADO: Não é possível enviar mensagens com blockchain corrompida!",
+                             "🦠 BLOQUEADO: Blockchain LOCAL corrompida detectada!",
                              "system")
                 insert_message(chat_box,
-                             "⚠️ Peer está ISOLADO da rede. Sincronize com peers legítimos para voltar.",
+                             "⚠️ Adulteração detectada - peer auto-isolado.",
                              "system")
-                print("[INFECTADO] Tentativa de envio bloqueada - blockchain corrompida")
+                insert_message(chat_box,
+                             "⚠️ Sincronize com peers legítimos para restaurar.",
+                             "system")
+                print("[AUTO-DETECÇÃO] Blockchain inválida - bloqueando envio")
+
+                # Atualiza interface para modo infectado
+                update_ui_theme()
+
                 entry.delete(0, tk.END)
                 return
 
