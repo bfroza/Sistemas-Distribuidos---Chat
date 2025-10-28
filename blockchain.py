@@ -5,21 +5,68 @@ import time
 
 class Block:
     """Representa um bloco individual na blockchain."""
-    
+
     def __init__(self, index, timestamp, data, previous_hash):
-        self.index = index
-        self.timestamp = timestamp
-        self.data = data  # mensagem do chat
-        self.previous_hash = previous_hash
-        self.hash = self.calculate_hash()
-    
+        # Usa atributos privados para controlar quando o hash é recalculado
+        self._index = index
+        self._timestamp = timestamp
+        self._data = data
+        self._previous_hash = previous_hash
+        self._hash = self.calculate_hash()
+
+    # Properties com getters e setters para recalcular hash automaticamente
+    @property
+    def index(self):
+        return self._index
+
+    @index.setter
+    def index(self, value):
+        self._index = value
+        self._hash = self.calculate_hash()  # Recalcula automaticamente
+
+    @property
+    def timestamp(self):
+        return self._timestamp
+
+    @timestamp.setter
+    def timestamp(self, value):
+        self._timestamp = value
+        self._hash = self.calculate_hash()  # Recalcula automaticamente
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        self._data = value
+        self._hash = self.calculate_hash()  # Recalcula automaticamente
+
+    @property
+    def previous_hash(self):
+        return self._previous_hash
+
+    @previous_hash.setter
+    def previous_hash(self, value):
+        self._previous_hash = value
+        self._hash = self.calculate_hash()  # Recalcula automaticamente
+
+    @property
+    def hash(self):
+        return self._hash
+
+    @hash.setter
+    def hash(self, value):
+        # Permite setar o hash diretamente (para from_dict)
+        self._hash = value
+
     def calculate_hash(self):
         """Calcula o hash SHA-256 do bloco."""
         block_string = json.dumps({
-            "index": self.index,
-            "timestamp": self.timestamp,
-            "data": self.data,
-            "previous_hash": self.previous_hash
+            "index": self._index,
+            "timestamp": self._timestamp,
+            "data": self._data,
+            "previous_hash": self._previous_hash
         }, sort_keys=True)
         return hashlib.sha256(block_string.encode()).hexdigest()
     
@@ -50,14 +97,31 @@ class Block:
 
 class Blockchain:
     """Blockchain simples para armazenar mensagens do chat."""
-    
+
     def __init__(self):
         self.chain = [self.create_genesis_block()]
-    
+
     def create_genesis_block(self):
         """Cria o primeiro bloco (gênesis) da blockchain."""
         # Timestamp fixo para garantir que todos os peers tenham o mesmo genesis
         return Block(0, 1700000000.0, "Genesis Block", "0")
+
+    def recalculate_from(self, start_index):
+        """
+        Recalcula os hashes de todos os blocos a partir de start_index.
+        Usado quando um bloco é modificado para propagar as mudanças.
+        """
+        if start_index < 1 or start_index >= len(self.chain):
+            return
+
+        # Para cada bloco a partir do start_index
+        for i in range(start_index, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+
+            # Atualiza o previous_hash para apontar para o hash atual do bloco anterior
+            current_block.previous_hash = previous_block.hash
+            # O hash será recalculado automaticamente pelo setter
     
     def get_latest_block(self):
         """Retorna o último bloco da chain."""
