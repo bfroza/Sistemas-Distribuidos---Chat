@@ -5,7 +5,7 @@ import threading
 
 MULTICAST_GROUP = "224.1.1.1"
 MULTICAST_PORT = 5007
-MULTICAST_TTL = 2
+MULTICAST_TTL = 16
 
 
 def multicast_announcer(local_port=5555):
